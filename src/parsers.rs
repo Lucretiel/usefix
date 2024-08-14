@@ -12,12 +12,13 @@ use std::{
 
 use nom::{
     branch::alt,
-    character::complete::{digit1, space0},
+    character::complete::{char, digit1, multispace0, multispace1, space0},
     error::{ErrorKind, FromExternalError, ParseError},
     multi::many0,
-    IResult, Parser as _,
+    IResult, Parser,
 };
 use nom_supreme::{
+    multi::collect_separated_terminated,
     tag::{complete::tag, TagError},
     ParserExt as _,
 };
@@ -106,7 +107,6 @@ impl Identifier<'_> {
 
     /**
     Get the "correct" value of this identifier, stripping out a leading r#
-
     */
     #[inline]
     #[must_use]
@@ -210,6 +210,13 @@ where
     .parse(input)
 }
 
+pub fn parse_wildcard<'i, E>(input: &'i str) -> IResult<&'i str, (), E>
+where
+    E: ParseError<&'i str>,
+{
+    char('*').value(()).parse(input)
+}
+
 /**
 Get and return all of the whitespace that starts a line
 */
@@ -300,5 +307,38 @@ where
     E: TagError<&'i str, &'static str>,
     E: ParseError<&'i str>,
 {
-    parse_identifier.cut().preceded_by(tag("as ")).parse(input)
+    parse_identifier
+        .preceded_by(multispace1)
+        .cut()
+        .preceded_by(prefix)
+    tag("as")
+        .precedes(parse_identifier.preceded_by(multispace1).cut())
+        .parse(input)
+}
+
+/// Parse a group of anything inside of `{}`, where each item is separated
+/// by commas. Everything may be surrounded by whitespace and there may be
+/// a trailing comma.
+fn parse_group<'i, T, C, E>(item_parser: impl Parser<&'i str, T, E>) -> impl Parser<&'i str, C, E>
+where
+    C: Default + Extend<T>,
+    E: ParseError<&'i str>,
+{
+    collect_separated_terminated(
+        item_parser.terminated(multispace0),
+        char(',').terminated(multispace0),
+        char(',').terminated(multispace0).terminated(char('}')),
+    )
+    .or(char('}').map(|_| C::default()))
+    .cut()
+    .preceded_by(char('{').terminated(multispace0))
+}
+
+struct CutPoint<A, B> {
+    prefix: A,
+    suffix: B,
+}
+
+impl<A, B> CutPoint<A, B> {
+    fn terminated(suffix: C) -> CutPoint<A, Terminated<B, C>>
 }

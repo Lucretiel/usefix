@@ -8,8 +8,6 @@ and `use abc::def::self`.)
 use std::collections::BTreeMap;
 use std::hash::Hash;
 
-use derive_new::new;
-
 use crate::parsers::{Identifier, IdentifierLike, Visibility};
 
 /// If a name is being imported, it either keeps its own name or is renamed
@@ -88,23 +86,20 @@ impl<'a> Branches<'a> {
 /**
 The very top level struct for a single `use` item
 */
-#[derive(Debug, Clone, new)]
+#[derive(Debug, Clone)]
 pub struct UseItem<'a> {
     /// All of the docs for this use. This should contain the full set of lines
     /// of rustdocs attached to the item.
-    #[new(default)]
     pub docs: Vec<&'a str>,
 
     /// All of the cfg items attached to this `use`. This should specifically
     /// contain the stuff inside the parenthesis, for each #[cfg()]
-    #[new(default)]
     pub configs: Vec<&'a str>,
 
     /// Any `pub`, `pub(crate)`, etc associated with this use
     pub visibility: Option<Visibility<'a>>,
 
     /// The tree of imports in the use item.
-    #[new(default)]
     pub children: BTreeMap<TreeRoot<'a>, Branches<'a>>,
 }
 
@@ -117,8 +112,6 @@ impl<'a> UseItem<'a> {
     ) {
         self.children.entry(root).or_default().insert(path, leaf)
     }
-
-    pub fn clean(&mut self) {}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -136,13 +129,4 @@ pub struct TreeRoot<'a> {
 
     // The identifier itself
     pub identifier: Identifier<'a>,
-}
-
-pub fn merge_use_item_sets<'a>(
-    base_set: &mut Vec<UseItem<'a>>,
-    new_set: impl Iterator<Item = UseItem<'a>>,
-) {
-    for new_item in new_set {
-        
-    }
 }
