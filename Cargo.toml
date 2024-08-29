@@ -14,8 +14,9 @@ anyhow = { version = "1.0.86", default-features = false, features = [
 ] }
 clap = { version = "4.1.11", features = ["derive"] }
 either = { version = "1.13.0", default-features = false }
-enum-map = "2.7.3"
-itertools = { version = "0.13.0", default-features = false }
+itertools = { version = "0.13.0", default-features = false, features = [
+    "use_std",
+] }
 joinery = "3.1.0"
 lazy_format = "2.0.3"
 nom = "7.1.3"
@@ -24,7 +25,6 @@ prettyplease = { version = "0.2.20", default-features = false }
 proc-macro2 = { version = "1.0.86", default-features = false, features = [
     "span-locations",
 ] }
-rayon = "1.10.0"
 syn = { version = "2.0.74", default-features = false, features = [
     "parsing",
     "full",

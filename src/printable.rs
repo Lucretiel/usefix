@@ -8,21 +8,15 @@ use itertools::Itertools;
 use syn::Ident;
 
 use crate::{
+    common::{NameUse, Rooted},
     flattened::{SingleUsedItem, UsedItemLeaf},
-    tree::{ConfigsList, DocsList, Rooted, Visibility},
+    tree::{ConfigsList, DocsList, Visibility},
 };
-
-/// The way a name is used:
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord)]
-enum NameUse<'a> {
-    Used,
-    Renamed(&'a Ident),
-}
 
 /// The list of things that can happen at path `a::b`
 enum PrintableChild<'a> {
     /// Just `a::b` or `a::b as c`
-    Plain(NameUse<'a>),
+    Plain(NameUse<&'a Ident>),
 
     /// `a::b::{...}` or `a::b::c`
     Subtree(PrintableTree<'a>),
@@ -52,7 +46,10 @@ impl<'a> PrintableChild<'a> {
         }
     }
 
-    pub fn add_usage(&mut self, usage: NameUse<'a>) {
+    /// Add a usage to this child. If the child already precisely matches this
+    /// usage, it'll be unchanged; otherwise, the child becomes a subtree and
+    /// the usage is added to it as a self usage.
+    pub fn add_self_useage(&mut self, usage: NameUse<&'a Ident>) {
         if let Self::Plain(current_usage) = *self {
             if current_usage == usage {
                 return;
@@ -70,7 +67,7 @@ impl<'a> PrintableChild<'a> {
 pub struct PrintableTree<'a> {
     // Whether this tree contains a field called `self` or any fields
     // called `self as rename`
-    this_usage: BTreeSet<NameUse<'a>>,
+    this_usage: BTreeSet<NameUse<&'a Ident>>,
 
     // Whether this tree contains a field called `*`
     wildcard: bool,
@@ -96,9 +93,9 @@ impl<'a> PrintableTree<'a> {
         path: impl IntoIterator<Item = &'a Ident>,
         leaf: &UsedItemLeaf<'a>,
     ) -> Self {
-        let mut tree = Self::new();
-        tree.add_path(path, leaf);
-        tree
+        let mut this = Self::new();
+        this.add_path(path, leaf);
+        this
     }
 
     /// Add another path to a tree
@@ -113,29 +110,20 @@ impl<'a> PrintableTree<'a> {
                 .become_subtree()
                 .add_path(path, leaf);
         } else {
-            let (ident, usage) = match leaf {
+            match *leaf {
                 // Simply add a wildcard
-                UsedItemLeaf::Wildcard => {
-                    self.wildcard = true;
-                    return;
-                }
+                UsedItemLeaf::Wildcard => self.wildcard = true,
 
-                // Add a plain leaf resembling `::ident`
-                UsedItemLeaf::Used(ident) => (ident, NameUse::Used),
-
-                // Add a renamed leaf resembling `::original as renamed`
-                UsedItemLeaf::Renamed { original, renamed } => {
-                    (original, NameUse::Renamed(&renamed))
-                }
+                // Add a plain leaf resembling `::ident` or a renamed leaf
+                // resembling `::original as renamed`
+                UsedItemLeaf::Plain(ident, usage) => match self.children.entry(ident) {
+                    // Add ::ident to the set of children
+                    Entry::Vacant(entry) => {
+                        entry.insert(PrintableChild::Plain(usage));
+                    }
+                    Entry::Occupied(mut entry) => entry.get_mut().add_self_useage(usage),
+                },
             };
-
-            match self.children.entry(ident) {
-                // Add ::ident to the set of children
-                Entry::Vacant(entry) => {
-                    entry.insert(PrintableChild::Plain(usage));
-                }
-                Entry::Occupied(mut entry) => entry.get_mut().add_usage(usage),
-            }
         }
     }
 
@@ -167,6 +155,7 @@ impl Display for PrintableTree<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let items = self.items();
 
+        // God bless `itertools`
         match items.exactly_one() {
             Ok(item) => item.fmt(f),
             Err(mut items) => {
@@ -174,7 +163,7 @@ impl Display for PrintableTree<'_> {
 
                 items.try_for_each(|item| {
                     item.fmt(f)?;
-                    f.write_str(", ")
+                    f.write_str(",")
                 })?;
 
                 f.write_str("}")
@@ -201,7 +190,7 @@ impl Display for BasicName<'_> {
 
 enum PrintableItem<'a> {
     Wildcard,
-    Plain(BasicName<'a>, NameUse<'a>),
+    Plain(BasicName<'a>, NameUse<&'a Ident>),
     Tree {
         root: &'a Ident,
         tree: &'a PrintableTree<'a>,
@@ -226,10 +215,10 @@ impl Display for PrintableItem<'_> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrintableKey<'a> {
     configs: &'a ConfigsList,
-    docs: &'a DocsList,
-    visibility: Option<&'a Visibility>,
     rooted: Rooted,
     root_ident: &'a Ident,
+    visibility: Option<&'a Visibility>,
+    docs: &'a DocsList,
 }
 
 impl PrintableKey<'_> {
@@ -254,6 +243,7 @@ impl PrintableKey<'_> {
             configs: self.configs,
             rooted: self.rooted,
             ident: self.root_ident,
+            docs: self.docs,
         }
     }
 }
@@ -294,16 +284,20 @@ enum CrateLocalityKey {
 struct UseItemSortKey<'a> {
     locality: CrateLocalityKey,
     configs: &'a ConfigsList,
+    docs: &'a DocsList,
     rooted: Rooted,
     ident: &'a Ident,
 }
 
 impl UseItemSortKey<'_> {
-    fn is_spaced_from(&self, other: &Self) -> bool {
+    /// Determine if two use items should have a space inserted between them`
+    fn is_spaced_from(&self, previous: &Self) -> bool {
         // I'm expecting to mess with this a lot during testing.
-        if self.locality != other.locality {
+        if self.locality != previous.locality {
             true
-        } else if self.configs.is_empty() != other.configs.is_empty() {
+        } else if self.configs.is_empty() != previous.configs.is_empty() {
+            true
+        } else if self.docs.is_not_empty() || previous.docs.is_not_empty() {
             true
         } else {
             false
@@ -321,7 +315,8 @@ fn format_use_item(
     key: &PrintableKey<'_>,
     tree: &PrintableChild<'_>,
 ) -> fmt::Result {
-    // Write docs here. Need to convert back to /// or /** */ form.
+    let docs = key.docs;
+    write!(dest, "{docs}")?;
 
     key.configs
         .configs()
@@ -364,16 +359,14 @@ impl<'a> PrintableUseItems<'a> {
     ) {
         let mut path = item.path.iter().copied();
 
-        if let Some(ident) = path.next() {
-            let key = PrintableKey {
+        match path.next() {
+            Some(ident) => match self.items.entry(PrintableKey {
                 configs,
                 docs,
                 visibility,
                 rooted: item.rooted,
                 root_ident: ident,
-            };
-
-            match self.items.entry(key) {
+            }) {
                 Entry::Vacant(entry) => {
                     entry.insert(PrintableChild::Subtree(PrintableTree::new_from_path(
                         path, &item.leaf,
@@ -383,33 +376,32 @@ impl<'a> PrintableUseItems<'a> {
                 Entry::Occupied(mut entry) => {
                     entry.get_mut().become_subtree().add_path(path, &item.leaf)
                 }
-            }
-        } else {
-            let (ident, usage) = match item.leaf {
-                UsedItemLeaf::Wildcard => panic!("can't add a wildcard import at the root level"),
-                UsedItemLeaf::Used(ident) => (ident, NameUse::Used),
-                UsedItemLeaf::Renamed { original, renamed } => {
-                    (original, NameUse::Renamed(renamed))
+            },
+            None => match item.leaf {
+                UsedItemLeaf::Wildcard => {
+                    // Panic is okay here because we already rejected root
+                    // wildcard imports at the parse step
+                    panic!("can't add a wildcard import at the root level")
                 }
-            };
-
-            let key = PrintableKey {
-                configs,
-                docs,
-                visibility,
-                rooted: item.rooted,
-                root_ident: ident,
-            };
-
-            match self.items.entry(key) {
-                Entry::Vacant(entry) => {
-                    entry.insert(PrintableChild::Plain(usage));
-                }
-                Entry::Occupied(mut entry) => entry.get_mut().add_usage(usage),
-            }
+                UsedItemLeaf::Plain(ident, usage) => match self.items.entry(PrintableKey {
+                    configs,
+                    docs,
+                    visibility,
+                    rooted: item.rooted,
+                    root_ident: ident,
+                }) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(PrintableChild::Plain(usage));
+                    }
+                    Entry::Occupied(mut entry) => entry.get_mut().add_self_useage(usage),
+                },
+            },
         }
     }
 
+    /// We take a generic iterator here in order to account for the different
+    /// normalization steps that we might perform in `usefix`. We don't want
+    /// to couple `PrintableUseItems` to any particular normalized form.
     pub fn build_from_use_items(
         items: impl Iterator<
             Item = (

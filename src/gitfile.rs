@@ -4,6 +4,8 @@ converted into the left or right version of the conflict, along with line
 number mappings back to the original file.
  */
 
+use std::{collections::HashMap, iter, num::NonZeroUsize};
+
 use either::Either;
 use nom::{
     branch::alt,
@@ -19,11 +21,10 @@ use nom_supreme::{
     tag::complete::tag,
     ParserExt,
 };
-use std::{collections::HashMap, iter, num::NonZeroUsize};
 
 /// A one-indexed line numbers. 1-indexing is what `syn` uses, so it's what
 /// we'll use, too.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LineNumber(NonZeroUsize);
 
 impl LineNumber {
@@ -40,10 +41,6 @@ impl LineNumber {
         value
     }
 
-    pub fn value(&self) -> NonZeroUsize {
-        self.0
-    }
-
     /// Create an iterator of all line numbers, starting at 1.
     pub fn lines_iter() -> impl Iterator<Item = Self> {
         let mut line = Self::ONE;
@@ -53,8 +50,8 @@ impl LineNumber {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Line<'a> {
-    content: &'a str,
-    line_number: LineNumber,
+    pub content: &'a str,
+    pub line_number: LineNumber,
 }
 
 impl<'a> Line<'a> {
@@ -76,9 +73,9 @@ pub enum Side {
 }
 
 /// A parsed file containing git conflicts.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct GitFile<'a> {
-    content: Vec<Chunk<'a, Line<'a>>>,
+    chunks: Vec<Chunk<'a, Line<'a>>>,
 }
 
 impl<'a> GitFile<'a> {
@@ -88,9 +85,9 @@ impl<'a> GitFile<'a> {
 
     /// Get an iterator of all of the lines of a particular version of the
     /// conflicted file, along with their "real" line numbers (that is, the
-    /// line numbers of the file containing the conflicts).
+    /// line numbers of the original file containing the conflicts).
     pub fn get_lines(&self, side: Side) -> impl Iterator<Item = Line<'a>> + '_ {
-        self.content.iter().flat_map(move |chunk| match *chunk {
+        self.chunks.iter().flat_map(move |chunk| match *chunk {
             Chunk::Line(line) => Either::Left(iter::once(line)),
             Chunk::Conflict(ref conflict) => {
                 let half = match side {
@@ -122,16 +119,20 @@ impl<'a> GitFile<'a> {
         let mut line_number = LineNumber::ONE;
 
         Self {
-            content: chunks
+            chunks: chunks
                 .into_iter()
                 .map(|chunk| chunk.with_line_number(&mut line_number))
                 .collect(),
         }
     }
+
+    pub fn chunks(&self) -> &[Chunk<'a, Line<'a>>] {
+        &self.chunks
+    }
 }
 
-#[derive(Debug, Clone)]
-enum Chunk<'a, Line> {
+#[derive(Debug)]
+pub enum Chunk<'a, Line> {
     Line(Line),
     Conflict(Conflict<'a, Line>),
 }
@@ -145,10 +146,10 @@ impl<'a> Chunk<'a, &'a str> {
     }
 }
 
-#[derive(Debug, Clone)]
-struct Conflict<'a, Line> {
-    left: ConflictHalf<'a, Line>,
-    right: ConflictHalf<'a, Line>,
+#[derive(Debug)]
+pub struct Conflict<'a, L> {
+    pub left: ConflictHalf<'a, L>,
+    pub right: ConflictHalf<'a, L>,
 }
 
 impl<'a> Conflict<'a, &'a str> {
@@ -163,10 +164,20 @@ impl<'a> Conflict<'a, &'a str> {
     }
 }
 
-#[derive(Debug, Clone)]
-struct ConflictHalf<'a, Line> {
+#[derive(Debug)]
+pub struct ConflictHalf<'a, L> {
     name: &'a str,
-    lines: Vec<Line>,
+    lines: Vec<L>,
+}
+
+impl<'a, L> ConflictHalf<'a, L> {
+    pub fn name(&self) -> &'a str {
+        self.name
+    }
+
+    pub fn lines(&self) -> &[L] {
+        &self.lines
+    }
 }
 
 impl<'a> ConflictHalf<'a, &'a str> {
@@ -184,6 +195,8 @@ impl<'a> ConflictHalf<'a, &'a str> {
         }
     }
 }
+
+impl ConflictHalf<'_, Line<'_>> {}
 
 /// Parse a file containing git conflicts. This is a list of chunks, terminated
 /// by eof.

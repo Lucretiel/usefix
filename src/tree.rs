@@ -11,9 +11,12 @@ use std::{
     hash::Hash,
 };
 
+use joinery::JoinableIterator;
 use proc_macro2::Span;
-use syn::{spanned::Spanned, PathSegment};
+use syn::spanned::Spanned;
 use syn::{AttrStyle, Expr, ExprLit, Ident, Lit, Meta, Path, UseName, UseRename, UseTree};
+
+use crate::common::{NameUse, Rooted};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Visibility {
@@ -49,6 +52,7 @@ impl Visibility {
     }
 }
 
+/// Create a printable version of a `Path`
 fn fmt_path(path: &Path) -> impl Display + '_ {
     lazy_format::make_lazy_format!(|f| {
         if path.leading_colon.is_some() {
@@ -58,17 +62,14 @@ fn fmt_path(path: &Path) -> impl Display + '_ {
         // We know, from the syn parser, that the path here doesn't have any
         // fucky nonsense going on, so we can just write the idents (for
         // context, check out the `PathSegment` type for the fucky nonsense
-        // we're ignoring.)
+        // we're ignoring).
+        let joined_segments = path
+            .segments
+            .iter()
+            .map(|segment| &segment.ident)
+            .join_with("::");
 
-        let mut idents = path.segments.iter();
-
-        match idents.next() {
-            Some(PathSegment { ident, .. }) => {
-                write!(f, "{ident}")?;
-                idents.try_for_each(|PathSegment { ident, .. }| write!(f, "::{ident}"))
-            }
-            None => Ok(()),
-        }
+        write!(f, "{joined_segments}")
     })
 }
 
@@ -87,28 +88,6 @@ impl Display for Visibility {
     }
 }
 
-/// If a name is being imported, it either keeps its own name or is renamed
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum NameUse {
-    /// `::name`
-    Used,
-
-    /// `::name as alias`
-    Renamed(Ident),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Copy, Hash)]
-pub enum Rooted {
-    Rooted,
-    Unrooted,
-}
-
-#[derive(Debug, Clone)]
-pub enum Leaf {
-    Used(NameUse),
-    Wildcard,
-}
-
 /**
 Collection of things that can be associated with a subtree in a use declaration.
 
@@ -122,7 +101,7 @@ to be valid
 pub struct Branches {
     /// If not none, this item is itself being imported, either using its own
     /// name or a rename (or, god forbid, some combination)
-    pub used: HashSet<NameUse>,
+    pub used: HashSet<NameUse<Ident>>,
 
     /// If true, the * wildcard is being imported at this point
     pub wildcard: bool,
@@ -131,28 +110,10 @@ pub struct Branches {
     pub children: HashMap<Ident, Branches>,
 }
 
-enum CleanResult {
-    Alive,
-    Dead,
-}
-
 impl Branches {
-    pub fn insert(&mut self, mut path: impl Iterator<Item = Ident>, leaf: Leaf) {
-        match path.next() {
-            None => match leaf {
-                Leaf::Wildcard => self.wildcard = true,
-                Leaf::Used(usage) => {
-                    self.used.insert(usage);
-                }
-            },
-            Some(component) => self
-                .children
-                .entry(component)
-                .or_default()
-                .insert(path, leaf),
-        }
-    }
-
+    /// Get a mutable reference to the subtree with the given identifier. If
+    /// the identifier is "self", this will return `self`; this handles the
+    /// case where the import resembles `use abc::def::self`.
     fn get_subtree(&mut self, location: Ident) -> &mut Self {
         if location == "self" {
             self
@@ -162,7 +123,8 @@ impl Branches {
     }
 }
 
-/// The contents of a single `#[cfg(...)]`.
+/// The contents of a single `#[cfg(...)]`. Ideally this would contain a
+/// TokenStream, but we need to be able to use it as a key in a map sometimes.
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Config(String);
 
@@ -175,7 +137,8 @@ impl Display for Config {
 
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 // This should contain a list of TokenStreams, but TokenStream doesn't implement
-// Ord or Hash and we want to use it as a key in a table.
+// Ord or Hash and we want to use it as a key in a table. We use a BTreeSet
+// here to allow the entire `ConfigsList` to itself be used as a key in maps.
 pub struct ConfigsList(BTreeSet<Config>);
 
 impl ConfigsList {
@@ -190,12 +153,29 @@ impl ConfigsList {
     }
 }
 
+/// The complete set of docs for an item.
+///
+/// When parsing rust code, `///` and `/** ... */` comments are converted into
+/// `#[doc = "..."]` attributes. Each element in this list is a single one of
+/// these attributes.
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Default, Clone)]
-pub struct DocsList(pub Vec<String>);
+pub struct DocsList(Vec<String>);
 
 impl DocsList {
+    /// Get the blocks for these docs. Each block is associated with a single
+    /// `///` or `/** ... */` comment.
+    pub fn blocks(&self) -> &[String] {
+        &self.0
+    }
+
+    /// Get a sequential iterator of all of the content of these docs, as
+    /// bytes.
     fn bytes(&self) -> impl DoubleEndedIterator<Item = u8> + '_ {
         self.0.iter().flat_map(|s| s.bytes())
+    }
+
+    pub fn is_not_empty(&self) -> bool {
+        self.0.iter().any(|s| !s.is_empty())
     }
 
     /// The total length of these docs, in bytes

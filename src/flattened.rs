@@ -31,7 +31,10 @@ use std::collections::BTreeMap;
 
 use syn::Ident;
 
-use crate::tree::{Branches, ConfigsList, DocsList, NameUse, Rooted, UseItem, Visibility};
+use crate::{
+    common::{NameUse, Rooted},
+    tree::{Branches, ConfigsList, DocsList, UseItem, Visibility},
+};
 
 /// The very last item of a flattened import: either an identifier, a renamed
 /// identifier, or a wildcard.
@@ -44,11 +47,7 @@ pub enum UsedItemLeaf<'a> {
     // Similarly, it is important that `Used` is before rename, because renames
     // towards `_` can be subsumed by identical uses or wildcards
     Wildcard,
-    Used(&'a Ident),
-    Renamed {
-        original: &'a Ident,
-        renamed: &'a Ident,
-    },
+    Plain(&'a Ident, NameUse<&'a Ident>),
 }
 
 impl UsedItemLeaf<'_> {
@@ -64,14 +63,13 @@ impl UsedItemLeaf<'_> {
     ///   for the same reason that the wildcard does.
     pub fn is_subsumed_by(&self, possible_parent: &Self) -> bool {
         match (possible_parent, self) {
-            (UsedItemLeaf::Wildcard, UsedItemLeaf::Used(_)) => true,
-            (UsedItemLeaf::Wildcard, UsedItemLeaf::Renamed { renamed, .. }) => *renamed == "_",
+            (UsedItemLeaf::Wildcard, UsedItemLeaf::Plain(_, usage)) => match usage {
+                NameUse::Used => true,
+                NameUse::Renamed(renamed) => *renamed == "_",
+            },
             (
-                UsedItemLeaf::Used(name1),
-                UsedItemLeaf::Renamed {
-                    original: name2,
-                    renamed,
-                },
+                UsedItemLeaf::Plain(name1, NameUse::Used),
+                UsedItemLeaf::Plain(name2, NameUse::Renamed(renamed)),
             ) => name1 == name2 && *renamed == "_",
             _ => false,
         }
@@ -242,13 +240,7 @@ impl<'a> NormalizedUsedItems<'a> {
             let item = SingleUsedItem {
                 rooted,
                 path: path.map(PathChain::to_list).unwrap_or_default(),
-                leaf: match usage {
-                    NameUse::Used => UsedItemLeaf::Used(leaf),
-                    NameUse::Renamed(renamed) => UsedItemLeaf::Renamed {
-                        original: leaf,
-                        renamed,
-                    },
-                },
+                leaf: UsedItemLeaf::Plain(leaf, usage.as_ref()),
             };
 
             let entry = self.items.entry(item).or_default();
