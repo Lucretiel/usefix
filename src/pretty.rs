@@ -8,31 +8,15 @@ use std::{
 use anyhow::Context;
 
 fn prettify(formatted_use_items: &str) -> String {
+    // We use prettyplease, a variant of rustfmt intended for use with macros
+    // and other codegen tools. For use items, it should be identical to
+
     // A note about this step: currently, we do something sort of silly: we
     // render the new use items to a string, then convert them BACK into a
     // `syn` tree, because the input to our pretty printer is a `syn` tree.
     // In principle we could just render directly to a TokenStream and skip
-    // a nasty runtime parse step. The main reason we don't do this is that
-    // the spans of the tree include line numbers, and there's no way to
-    // manually create a span with line numbers. The line numbers are necessary
-    // to preserve grouping of use items.
-    // We use prettyplease, a variant of rustfmt intended for use with macros
-    // and other codegen tools. For use items, it should be identical to
-
-    /*
-      // A note about this step: currently, we do something sort of silly: we
-    // render the new use items to a string, then convert them BACK into a
-    // `syn` tree, because the input to our pretty printer is a `syn` tree.
-    // In principle we could just render directly to a TokenStream and skip
-    // a nasty runtime parse step. The main reason we don't do this is that
-    // the spans of the tree include line numbers, and there's no way to
-    // manually create a span with line numbers. The line numbers are necessary
-    // to preserve grouping of use items.
-    let parsed_formatted_use_items = syn::parse_file(&formatted_use_items)
-        .expect("usefix shouldn't ever produce malformed use items");
-
-    let prettified_use_items = prettyplease::unparse(&parsed_formatted_use_items);
-     */
+    // a nasty runtime parse step. I don't want to maintain two versions of
+    // `printable`, though, so we don't do that.
     todo!()
 }
 
@@ -67,7 +51,11 @@ pub fn prettify_with_subcommand(
         // stdout thread
         let stdout_thread = scope.spawn(move || {
             let mut output = Vec::with_capacity(formatted_use_items.len());
-            stdout.read_to_end(&mut output).map(|_| output)
+            stdout.read_to_end(&mut output).map(move |_| {
+                // Always add an extra newline at the end
+                output.push(b'\n');
+                output
+            })
         });
 
         // Await the command, then join the threads.

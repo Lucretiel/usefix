@@ -222,6 +222,7 @@ fn main() -> anyhow::Result<()> {
 /// a list of Annotated Use Items.
 fn extract_use_items(file: &GitFile<'_>, side: Side) -> anyhow::Result<Vec<AnnotatedUseItem>> {
     let derived_file = file.build_derived_file(side);
+    let derived_file_lines: Vec<&str> = derived_file.content().lines().collect();
 
     let parsed_file =
         syn::parse_file(&derived_file.content()).context("failed to parse Rust syntax")?;
@@ -238,7 +239,19 @@ fn extract_use_items(file: &GitFile<'_>, side: Side) -> anyhow::Result<Vec<Annot
             let start = use_item.span.start().line;
             let end = use_item.span.end().line;
 
-            let touched_original_lines = (start..=end)
+            // Whenever a `use` item is followed by a newline, we include that
+            // newline in set of lines that are "touched" by it
+            //
+            // Note on indexing: syn line numbers are one-indexed and inclusive,
+            // but we want the line AFTER that end line, so it's end - 1 + 1
+            let end = match derived_file_lines.get(end) {
+                Some(line) if line.trim().is_empty() => end + 1,
+                _ => end,
+            }
+            // Add an extra +1 so we can use `..end` instead of `..=end`
+            + 1;
+
+            let touched_original_lines = (start..end)
                 .map(|derived_line| {
                     LineNumber::from_one_indexed(derived_line).expect("line number was 0")
                 })
