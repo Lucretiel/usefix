@@ -129,6 +129,12 @@ impl<'a> GitFile<'a> {
     pub fn chunks(&self) -> &[Chunk<'a, Line<'a>>] {
         &self.chunks
     }
+
+    pub fn contains_conflict(&self) -> bool {
+        self.chunks
+            .iter()
+            .any(|chunk| matches!(chunk, Chunk::Conflict(_)))
+    }
 }
 
 #[derive(Debug)]

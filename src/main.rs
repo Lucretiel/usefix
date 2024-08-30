@@ -177,8 +177,16 @@ fn main() -> anyhow::Result<()> {
     // TODO: do these in separate threads. `proc-macro2`` stuff isn't Send,
     // unfortunately. Only way to resolve this for now is to NOT use `syn`
     // types in `tree.rs``
-    let left_use_items = extract_use_items(&parsed_file, Side::Left).unwrap();
-    let right_use_items = extract_use_items(&parsed_file, Side::Right).unwrap();
+    let left_use_items = extract_use_items(&parsed_file, Side::Left).context(
+        if parsed_file.contains_conflict() {
+            "failed to get `use` items from the left side of the conflicted file"
+        } else {
+            "failed to get `use` items"
+        },
+    )?;
+
+    let right_use_items = extract_use_items(&parsed_file, Side::Right)
+        .context("failed to get use items from the right side of the conflicted file")?;
 
     // Flatten the list into a list of paths, where each path stores all known
     // properties variants. This step normalizes the configs (any time a path
@@ -255,8 +263,15 @@ fn extract_use_items(file: &GitFile<'_>, side: Side) -> anyhow::Result<Vec<Annot
     let derived_file = file.build_derived_file(side);
     let derived_file_lines: Vec<&str> = derived_file.content().lines().collect();
 
-    let parsed_file =
-        syn::parse_file(&derived_file.content()).context("failed to parse Rust syntax")?;
+    let parsed_file = syn::parse_file(&derived_file.content()).map_err(|err| {
+        let span = err.span();
+        let point = span.start();
+        let line = point.line;
+        let column = point.column;
+
+        let context = format!("Error parsing rust syntax at line {line}, column {column}");
+        anyhow::Error::new(err).context(context)
+    })?;
 
     let use_items = parsed_file
         .items
