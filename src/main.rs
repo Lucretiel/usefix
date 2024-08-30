@@ -137,9 +137,12 @@ mod write_file;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io::{self, Write},
+    path::PathBuf,
 };
 
 use anyhow::Context;
+use clap::Parser;
+use pretty::prettify_with_prettyplease;
 
 use crate::{
     flattened::{NormalizedUsedItems, SingleUsedItem, UsedItemPropertiesGroup},
@@ -149,13 +152,31 @@ use crate::{
     tree::{ConfigsList, UseItem},
 };
 
+#[derive(clap::Parser)]
+struct Args {
+    /// By default, we use prettyplease to format the use items. This argument
+    /// specifies an external command (typically `rustfmt`) that will be used
+    /// instead (for instance, if you want `usefix` to respect your rustfmt
+    /// configuration).
+    ///
+    /// The given argument will be treated as a whole command; use a shell
+    /// script or something similar if you want to pass extra arguments to it.
+    /// The use items will be passed to the given command over stdin, and the
+    /// formatted use items will be read from stdout.
+    #[clap(long, short = 'c')]
+    rustfmt: Option<PathBuf>,
+}
+
 fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+
     let file =
         io::read_to_string(io::stdin().lock()).context("i/o error reading file from stdin")?;
     let parsed_file = GitFile::from_file(&file).context("error parsing git conflicts in file")?;
 
     // TODO: do these in separate threads. `proc-macro2`` stuff isn't Send,
-    // unfortunately.
+    // unfortunately. Only way to resolve this for now is to NOT use `syn`
+    // types in `tree.rs``
     let left_use_items = extract_use_items(&parsed_file, Side::Left).unwrap();
     let right_use_items = extract_use_items(&parsed_file, Side::Right).unwrap();
 
@@ -183,10 +204,20 @@ fn main() -> anyhow::Result<()> {
             },
         ));
 
-    // Render the use items to a string, complete with sorting and grouping,
-    // then prettify it with rustfmt or prettyplease.
+    // Render the use items to a string, complete with sorting and grouping
     let formatted_use_items = printable_items.to_string();
-    let prettified_use_items = prettify_with_subcommand("rustfmt", &formatted_use_items)?;
+
+    // Then prettify them, adding indentation and newlines and so on
+    let prettified_use_items = match args.rustfmt {
+        None => prettify_with_prettyplease(&formatted_use_items),
+        Some(command) => {
+            let printable_command = command.display();
+
+            prettify_with_subcommand(&command, &formatted_use_items).with_context(|| {
+                format!("error formatting with external subcommand '{printable_command}'")
+            })?
+        }
+    };
 
     // Compute the set of lines from the ORIGINAL file that need to be
     // discarded; these are the lines in the original file that include any
@@ -201,9 +232,9 @@ fn main() -> anyhow::Result<()> {
     // Create the final, fixed version of the file. We assume that files fit
     // neatly in memory, so to save on system calls, we just put it all in a
     // single buffer and write it at the end.
-    let mut formatted_file: Vec<u8> = Vec::with_capacity(file.len());
+    let mut output_file: Vec<u8> = Vec::with_capacity(file.len());
     write_file::write_corrected_file(
-        &mut formatted_file,
+        &mut output_file,
         &parsed_file,
         &discarded_lines,
         &prettified_use_items,
@@ -212,7 +243,7 @@ fn main() -> anyhow::Result<()> {
 
     io::stdout()
         .lock()
-        .write_all(&formatted_file)
+        .write_all(&output_file)
         .context("i/o error writing to stdout")?;
 
     Ok(())
