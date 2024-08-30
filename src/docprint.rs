@@ -2,7 +2,10 @@
 Functionality related to whether and how to print doc tags
  */
 
-use std::fmt::{self, Display, Formatter};
+use std::{
+    fmt::{self, Display, Formatter},
+    ops::ControlFlow,
+};
 
 use crate::tree::DocsList;
 
@@ -44,30 +47,21 @@ fn categorize_doc(doc: &str) -> DocCategory {
 
 /// Check if the given comment contains balanced /* */ comments
 fn contains_balanced_blocks(comment: &str) -> bool {
-    let mut depth: u32 = 0;
-    let mut chars = comment.as_bytes().iter().copied().peekable();
-
-    while let Some(c) = chars.next() {
-        match c {
-            b'/' if chars.peek() == Some(&b'*') => {
-                depth = match depth.checked_add(1) {
-                    Some(depth) => depth,
-                    None => return false,
-                };
-                chars.next();
+    match comment
+        .as_bytes()
+        .windows(2)
+        .try_fold((0u32, false), |(depth, skip), pair| {
+            match match (skip, pair) {
+                (true, _) => return ControlFlow::Continue((depth, false)),
+                (false, b"/*") => depth.checked_add(1),
+                (false, b"*/") => depth.checked_sub(1),
+                (false, _) => return ControlFlow::Continue((depth, false)),
+            } {
+                Some(depth) => ControlFlow::Continue((depth, true)),
+                None => ControlFlow::Break(()),
             }
-
-            b'*' if chars.peek() == Some(&b'/') => {
-                depth = match depth.checked_sub(1) {
-                    Some(depth) => depth,
-                    None => return false,
-                };
-                chars.next();
-            }
-
-            _ => {}
-        }
+        }) {
+        ControlFlow::Continue((0, _)) => true,
+        _ => false,
     }
-
-    depth == 0
 }
