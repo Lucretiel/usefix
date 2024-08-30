@@ -196,8 +196,6 @@ impl<'a> ConflictHalf<'a, &'a str> {
     }
 }
 
-impl ConflictHalf<'_, Line<'_>> {}
-
 /// Parse a file containing git conflicts. This is a list of chunks, terminated
 /// by eof.
 fn parse_file(input: &str) -> IResult<&str, GitFile<'_>, ErrorTree<&str>> {
@@ -308,11 +306,10 @@ where
                 ));
             }
 
-            let (tail, line) = match line.parse(input) {
-                Ok(parsed) => parsed,
-                Err(nom::Err::Error(err)) => break Err(nom::Err::Error(terminator_error.or(err))),
-                Err(err) => break Err(err),
-            };
+            let (tail, line) = line.parse(input).map_err(|err| match err {
+                nom::Err::Error(err) => nom::Err::Error(terminator_error.or(err)),
+                err => err,
+            })?;
 
             // Technically right around here we should check that we're not
             // going to loop forever (did the `line` parser consume 0 input?).
